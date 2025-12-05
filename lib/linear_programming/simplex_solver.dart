@@ -369,28 +369,82 @@ class SimplexSolver {
             solution:
                 _extractSolution(tableau, standardForm, debug: debug) ?? [],
           );
-        } else if (debug) {
-          print('警告：目标函数值为0，但基变量中仍有人工变量，尝试移除');
-          // 尝试用非人工变量替换人工变量
+        } else {
+          // 目标函数值为0但仍有人工变量在基中
+          // 强制选择非人工变量作为入基变量，人工变量作为出基变量
+          if (debug) {
+            print('警告：目标函数值为0，但基变量中仍有人工变量，尝试移除');
+          }
+
+          // 找到一个人工变量行和非人工变量列进行pivot
+          int? artificialRow;
+          int? nonArtificialCol;
+
           for (var i = 0; i < tableau.basis.length; i++) {
             final basisVar = tableau.basis[i];
             if (basisVar >= artificialStart && basisVar < artificialEnd) {
+              artificialRow = i;
               // 找到可以替换的非人工变量
               for (var j = 0; j < standardForm.originalNumVars; j++) {
                 if (!tableau.basis.contains(j) &&
                     tableau.tableau[i][j].abs() > _epsilon) {
-                  print('移除人工变量$basisVar：用变量$j替换（行$i）');
-                  _pivot(tableau, i, j);
+                  nonArtificialCol = j;
                   break;
                 }
               }
+              if (nonArtificialCol != null) break;
             }
+          }
+
+          if (artificialRow != null && nonArtificialCol != null) {
+            if (debug) {
+              print(
+                '移除人工变量${tableau.basis[artificialRow]}：用变量$nonArtificialCol替换（行$artificialRow）',
+              );
+            }
+            _pivot(tableau, artificialRow, nonArtificialCol);
+
+            // 重新计算目标函数行（消除所有基变量的贡献）
+            final numRows = tableau.tableau.length - 1;
+            final numCols = tableau.tableau[0].length - 1;
+            // 重置目标函数行：只设置人工变量的系数
+            for (var j = 0; j < numCols; j++) {
+              if (j >= artificialStart && j < artificialEnd) {
+                tableau.tableau[numRows][j] = -1.0; // 人工变量系数
+              } else {
+                tableau.tableau[numRows][j] = 0.0;
+              }
+            }
+            // 消除所有人工变量在基中的贡献
+            for (var i = 0; i < numRows && i < tableau.basis.length; i++) {
+              final basisVar = tableau.basis[i];
+              if (basisVar >= artificialStart && basisVar < artificialEnd) {
+                // 人工变量在基中，消除其贡献
+                for (var k = 0; k <= numCols; k++) {
+                  tableau.tableau[numRows][k] += tableau.tableau[i][k];
+                }
+              }
+            }
+            // 重新计算目标函数行的RHS值
+            double newRhs = 0.0;
+            for (var i = 0; i < numRows && i < tableau.basis.length; i++) {
+              final basisVar = tableau.basis[i];
+              if (basisVar >= artificialStart && basisVar < artificialEnd) {
+                final rhsIdx = tableau.tableau[0].length - 1;
+                newRhs += tableau.tableau[i][rhsIdx];
+              }
+            }
+            tableau.tableau[numRows][numCols] = newRhs;
+
+            // 继续下一次迭代，重新检查
+            iteration++;
+            continue;
           }
         }
       }
 
       // 选择入基变量
-      final pivotCol = _findPivotColumn(tableau);
+      final pivotCol = _findPivotColumn(tableau, false);
       if (pivotCol == -1) {
         // 无法改进，检查是否最优
         final lastRow = tableau.tableau.last;
@@ -542,6 +596,20 @@ class SimplexSolver {
       }
     }
 
+    // 确保所有基变量在目标函数行中的系数为0
+    for (var i = 0; i < numRows && i < tableau.basis.length; i++) {
+      final basisVar = tableau.basis[i];
+      if (basisVar < numCols) {
+        final currentCoeff = tableau.tableau[numRows][basisVar];
+        if (currentCoeff.abs() > _epsilon) {
+          if (debug) {
+            print('  基变量$basisVar在目标函数行中的系数不为0 ($currentCoeff)，手动设置为0');
+          }
+          tableau.tableau[numRows][basisVar] = 0.0;
+        }
+      }
+    }
+
     if (debug) {
       print('目标函数行（重新计算后）: ${tableau.tableau[numRows]}');
     }
@@ -587,11 +655,59 @@ class SimplexSolver {
 
         if (!objectiveImproved) {
           if (debug) {
-            print('目标函数值在循环中没有改进，尝试优先选择非退化行');
+            print('目标函数值在循环中没有改进，尝试使用扰动法打破循环');
           }
-          preferNonDegenerate = true;
-          basisHistory.clear();
-          objectiveHistory.clear();
+
+          // 使用扰动法打破循环：对退化的RHS添加小的扰动
+          final perturbation = _epsilon * 100; // 使用较大的扰动
+          var perturbed = false;
+          for (var i = 0; i < numRows; i++) {
+            final rhsIdx = tableau.tableau[0].length - 1;
+            final rhs = tableau.tableau[i][rhsIdx];
+            if (rhs.abs() < _epsilon) {
+              // 对退化的行添加扰动，使用不同的倍数以保持字典序
+              final oldRhs = tableau.tableau[i][rhsIdx];
+              tableau.tableau[i][rhsIdx] = perturbation * (i + 1) * (i + 1);
+              perturbed = true;
+              if (debug && iteration < 10) {
+                print('对行$i添加扰动: ${oldRhs} -> ${tableau.tableau[i][rhsIdx]}');
+              }
+            }
+          }
+
+          if (perturbed) {
+            // 重新计算目标函数行的RHS值（因为RHS改变了）
+            double newRhs = 0.0;
+            for (var i = 0; i < numRows && i < tableau.basis.length; i++) {
+              final basisVar = tableau.basis[i];
+              if (basisVar < standardForm.objective.length) {
+                final coeff = standardForm.objective[basisVar];
+                if (coeff.abs() > _epsilon) {
+                  final rhsIdx = tableau.tableau[0].length - 1;
+                  newRhs += coeff * tableau.tableau[i][rhsIdx];
+                }
+              }
+            }
+            tableau.tableau[numRows][tableau.tableau[0].length - 1] = newRhs;
+
+            if (debug) {
+              print('扰动后目标函数值: $newRhs');
+            }
+
+            // 清空历史记录，重新开始
+            preferNonDegenerate = true;
+            basisHistory.clear();
+            objectiveHistory.clear();
+
+            // 继续迭代，看看扰动是否能打破循环
+            iteration++;
+            continue;
+          } else {
+            // 如果没有退化的行，尝试优先选择非退化行
+            preferNonDegenerate = true;
+            basisHistory.clear();
+            objectiveHistory.clear();
+          }
         }
       }
 
@@ -636,7 +752,7 @@ class SimplexSolver {
       }
 
       // 选择入基变量
-      final pivotCol = _findPivotColumn(tableau);
+      final pivotCol = _findPivotColumn(tableau, isMaximize);
       if (pivotCol == -1) {
         return LinearProgramResult.unbounded();
       }
@@ -672,33 +788,57 @@ class SimplexSolver {
   }
 
   /// 检查是否达到最优
+  /// [isMaximize] 原始问题是否为最大化问题
+  /// 注意：在标准形式中，最大化问题已转换为最小化，目标函数行存储的是 -c（其中c是原始目标函数的负值）
+  /// 所以对于最大化问题，目标函数行中如果有正的reduced cost，可以改进
   static bool _isOptimal(_Tableau tableau, [bool isMaximize = false]) {
     final lastRow = tableau.tableau.last;
     for (var j = 0; j < lastRow.length - 1; j++) {
       // 跳过基变量
       if (tableau.basis.contains(j)) continue;
 
-      // 对于标准化问题，如果有负的 reduced cost，可以改进
-      if (lastRow[j] < -_epsilon) {
-        return false;
+      // 对于最小化问题（标准形式），如果有负的 reduced cost，可以改进
+      // 对于最大化问题（转换为最小化后），目标函数行存储的是 c（不是-c），
+      // 所以如果有正的 reduced cost，可以改进
+      if (isMaximize) {
+        if (lastRow[j] > _epsilon) {
+          return false; // 可以改进
+        }
+      } else {
+        if (lastRow[j] < -_epsilon) {
+          return false; // 可以改进
+        }
       }
     }
     return true;
   }
 
   /// 找到主元列（入基变量）
-  static int _findPivotColumn(_Tableau tableau) {
+  /// [isMaximize] 原始问题是否为最大化问题
+  static int _findPivotColumn(_Tableau tableau, [bool isMaximize = false]) {
     final lastRow = tableau.tableau.last;
-    var minVal = 0.0;
     var pivotCol = -1;
 
     for (var j = 0; j < lastRow.length - 1; j++) {
       // 跳过基变量
       if (tableau.basis.contains(j)) continue;
 
-      if (lastRow[j] < minVal - _epsilon) {
-        minVal = lastRow[j];
-        pivotCol = j;
+      // 对于最小化问题，查找负的reduced cost
+      // 对于最大化问题，查找正的reduced cost
+      if (isMaximize) {
+        if (lastRow[j] > _epsilon) {
+          // 选择第一个（索引最小的）正的reduced cost变量（Bland规则）
+          if (pivotCol == -1 || j < pivotCol) {
+            pivotCol = j;
+          }
+        }
+      } else {
+        if (lastRow[j] < -_epsilon) {
+          // 选择最负的reduced cost变量
+          if (pivotCol == -1 || lastRow[j] < lastRow[pivotCol]) {
+            pivotCol = j;
+          }
+        }
       }
     }
 
