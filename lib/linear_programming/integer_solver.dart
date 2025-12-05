@@ -54,6 +54,15 @@ class IntegerSolver {
       final relaxedProblem = _createRelaxedProblem(node);
       final relaxedResult = SimplexSolver.solve(relaxedProblem);
 
+      final debug = const bool.fromEnvironment('DEBUG_ILP', defaultValue: false);
+      if (debug && nodesExplored <= 10) {
+        print('节点 $nodesExplored:');
+        print('  下界: ${node.lowerBounds}');
+        print('  上界: ${node.upperBounds}');
+        print('  结果: ${relaxedResult.status}');
+        print('  解: ${relaxedResult.solution}');
+      }
+
       if (!relaxedResult.isOptimal) {
         // 无可行解或无界，剪枝
         continue;
