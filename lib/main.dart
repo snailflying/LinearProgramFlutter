@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import 'package:demo_flutter/linear_programming/linear_programming.dart';
 
 void main() {
   runApp(const MyApp());
@@ -70,119 +69,8 @@ class _MyHomePageState extends State<MyHomePage> {
       _examples.clear();
     });
 
-    // 示例1：简单的线性规划问题（最大化）
-    _runExample1();
-
-    // 示例2：带等式约束的线性规划问题
-    _runExample2();
-
-    // 示例3：带变量边界的线性规划问题
-    _runExample3();
-
-    // 示例4：整数线性规划问题
-    _runExample4();
-
     setState(() {
       _isLoading = false;
-    });
-  }
-
-  /// 示例1：最大化问题
-  void _runExample1() {
-    final problem = LinearProgram(
-      optimizationType: OptimizationType.maximize,
-      objectiveCoefficients: [3.0, 2.0],
-      constraintMatrix: [
-        [1.0, 1.0],  // x + y <= 4
-        [2.0, 1.0],  // 2x + y <= 6
-      ],
-      constraintRhs: [4.0, 6.0],
-      constraintTypes: [
-        ConstraintType.lessThanOrEqual,
-        ConstraintType.lessThanOrEqual,
-      ],
-    );
-
-    final result = SimplexSolver.solve(problem);
-    _examples.add({
-      'title': '示例1：最大化问题',
-      'description': '目标函数: max z = 3x + 2y\n约束: x + y <= 4, 2x + y <= 6',
-      'result': result,
-    });
-  }
-
-  /// 示例2：带等式约束的问题
-  void _runExample2() {
-    final problem = LinearProgram(
-      optimizationType: OptimizationType.minimize,
-      objectiveCoefficients: [1.0, 2.0],
-      constraintMatrix: [
-        [1.0, 1.0],  // x + y = 3
-        [1.0, 0.0],  // x <= 2
-        [0.0, 1.0],  // y <= 2
-      ],
-      constraintRhs: [3.0, 2.0, 2.0],
-      constraintTypes: [
-        ConstraintType.equal,
-        ConstraintType.lessThanOrEqual,
-        ConstraintType.lessThanOrEqual,
-      ],
-    );
-
-    final result = SimplexSolver.solve(problem);
-    _examples.add({
-      'title': '示例2：带等式约束的问题',
-      'description': '目标函数: min z = x + 2y\n约束: x + y = 3, x <= 2, y <= 2',
-      'result': result,
-    });
-  }
-
-  /// 示例3：带变量边界的问题
-  void _runExample3() {
-    final problem = LinearProgram(
-      optimizationType: OptimizationType.maximize,
-      objectiveCoefficients: [2.0, 3.0],
-      constraintMatrix: [
-        [1.0, 1.0],  // x + y <= 5
-      ],
-      constraintRhs: [5.0],
-      constraintTypes: [
-        ConstraintType.lessThanOrEqual,
-      ],
-      lowerBounds: [0.0, 1.0],
-      upperBounds: [3.0, 4.0],
-    );
-
-    final result = SimplexSolver.solve(problem);
-    _examples.add({
-      'title': '示例3：带变量边界的问题',
-      'description': '目标函数: max z = 2x + 3y\n约束: x + y <= 5, 0 <= x <= 3, 1 <= y <= 4',
-      'result': result,
-    });
-  }
-
-  /// 示例4：整数线性规划问题
-  void _runExample4() {
-    final problem = LinearProgram(
-      optimizationType: OptimizationType.maximize,
-      objectiveCoefficients: [5.0, 8.0],
-      constraintMatrix: [
-        [1.0, 1.0],   // x + y <= 6
-        [5.0, 9.0],   // 5x + 9y <= 45
-      ],
-      constraintRhs: [6.0, 45.0],
-      constraintTypes: [
-        ConstraintType.lessThanOrEqual,
-        ConstraintType.lessThanOrEqual,
-      ],
-      integerVariables: {0, 1}, // x 和 y 都是整数
-    );
-
-    final result = IntegerSolver.solve(problem);
-    _examples.add({
-      'title': '示例4：整数线性规划问题',
-      'description': '目标函数: max z = 5x + 8y\n约束: x + y <= 6, 5x + 9y <= 45\nx, y 为整数',
-      'result': result,
     });
   }
 
@@ -207,7 +95,6 @@ class _MyHomePageState extends State<MyHomePage> {
               itemCount: _examples.length,
               itemBuilder: (context, index) {
                 final example = _examples[index];
-                final result = example['result'] as LinearProgramResult;
                 return Card(
                   margin: const EdgeInsets.only(bottom: 16),
                   child: Padding(
@@ -236,30 +123,7 @@ class _MyHomePageState extends State<MyHomePage> {
                               ),
                         ),
                         const SizedBox(height: 8),
-                        Text('状态: ${_getStatusText(result.status)}'),
-                        Text('消息: ${result.message}'),
-                        if (result.isOptimal) ...[
-                          const SizedBox(height: 8),
-                          Text(
-                            '最优值: ${result.optimalValue?.toStringAsFixed(4)}',
-                            style: const TextStyle(
-                              fontWeight: FontWeight.bold,
-                              color: Colors.green,
-                            ),
-                          ),
-                          if (result.solution != null) ...[
-                            const SizedBox(height: 8),
-                            const Text('最优解:'),
-                            ...result.solution!.asMap().entries.map((entry) {
-                              return Padding(
-                                padding: const EdgeInsets.only(left: 16, top: 4),
-                                child: Text(
-                                  'x${entry.key + 1} = ${entry.value.toStringAsFixed(4)}',
-                                ),
-                              );
-                            }),
-                          ],
-                        ],
+                        Text('状态: '),
                       ],
                     ),
                   ),
@@ -269,16 +133,4 @@ class _MyHomePageState extends State<MyHomePage> {
     );
   }
 
-  String _getStatusText(SolutionStatus status) {
-    switch (status) {
-      case SolutionStatus.optimal:
-        return '最优解';
-      case SolutionStatus.infeasible:
-        return '无可行解';
-      case SolutionStatus.unbounded:
-        return '无界';
-      case SolutionStatus.unsolved:
-        return '未求解';
-    }
-  }
 }
