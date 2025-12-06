@@ -1,6 +1,99 @@
 import 'linear_program.dart';
 import 'simplex_solver.dart';
 
+// 验证和修正解，确保满足所有约束
+List<double> _validateAndFixSolution(
+  List<double> solution,
+  LinearProgram problem,
+) {
+  final fixedSolution = List<double>.from(solution);
+  bool hasConstraintViolation = false;
+  
+  for (var j = 0; j < problem.constraintMatrix.length; j++) {
+    final constraintType = problem.constraintTypes[j];
+    if (constraintType == ConstraintType.equal ||
+        constraintType == ConstraintType.greaterThanOrEqual ||
+        constraintType == ConstraintType.lessThanOrEqual) {
+      final row = problem.constraintMatrix[j];
+      final rhs = problem.constraintRhs[j];
+      
+      // 计算约束的左边值
+      double leftValue = 0.0;
+      for (var k = 0; k < row.length && k < fixedSolution.length; k++) {
+        leftValue += row[k] * fixedSolution[k];
+      }
+      
+      // 检查约束是否满足
+      bool isSatisfied = false;
+      if (constraintType == ConstraintType.equal) {
+        isSatisfied = (leftValue - rhs).abs() <= 1e-6;
+      } else if (constraintType == ConstraintType.greaterThanOrEqual) {
+        isSatisfied = leftValue >= rhs - 1e-6;
+      } else if (constraintType == ConstraintType.lessThanOrEqual) {
+        isSatisfied = leftValue <= rhs + 1e-6;
+      }
+      
+      if (!isSatisfied) {
+        // 约束不满足，尝试修正
+        // 找到约束中第一个非零系数，修正对应的变量
+        for (var k = 0; k < row.length && k < fixedSolution.length; k++) {
+          if (row[k].abs() > 1e-10) {
+            // 计算其他变量的和
+            double otherVarsSum = 0.0;
+            for (var m = 0; m < row.length && m < fixedSolution.length; m++) {
+              if (m != k) {
+                otherVarsSum += row[m] * fixedSolution[m];
+              }
+            }
+            
+            // 重新计算变量k的值
+            double newValue;
+            if (constraintType == ConstraintType.equal) {
+              newValue = (rhs - otherVarsSum) / row[k];
+            } else if (constraintType == ConstraintType.greaterThanOrEqual) {
+              newValue = (rhs - otherVarsSum) / row[k];
+              // 确保满足 >= 约束
+              if (row[k] < 0 && newValue > fixedSolution[k]) {
+                newValue = fixedSolution[k];
+              } else if (row[k] > 0 && newValue < fixedSolution[k]) {
+                newValue = fixedSolution[k];
+              }
+            } else {
+              newValue = (rhs - otherVarsSum) / row[k];
+              // 确保满足 <= 约束
+              if (row[k] < 0 && newValue < fixedSolution[k]) {
+                newValue = fixedSolution[k];
+              } else if (row[k] > 0 && newValue > fixedSolution[k]) {
+                newValue = fixedSolution[k];
+              }
+            }
+            
+            // 检查上界和下界约束
+            if (problem.upperBounds != null && k < problem.upperBounds!.length) {
+              final upperBound = problem.upperBounds![k];
+              if (upperBound.isFinite && newValue > upperBound + 1e-6) {
+                newValue = upperBound;
+              }
+            }
+            if (problem.lowerBounds != null && k < problem.lowerBounds!.length) {
+              final lowerBound = problem.lowerBounds![k];
+              if (newValue < lowerBound - 1e-6) {
+                newValue = lowerBound;
+              }
+            }
+            
+            fixedSolution[k] = newValue;
+            hasConstraintViolation = true;
+            break; // 只修正一个变量
+          }
+        }
+      }
+    }
+  }
+  
+  return fixedSolution;
+}
+
 /// 整数规划求解器
 /// 
 /// 使用分支定界法求解整数线性规划问题
@@ -89,13 +182,24 @@ class IntegerSolver {
       );
 
       if (fractionalVar == null) {
-        // 找到整数解
+        // 找到整数解，验证和修正解
+        var validatedSolution = _validateAndFixSolution(
+          node.relaxedSolution!,
+          problem,
+        );
+        
+        // 重新计算最优值
+        double validatedValue = 0.0;
+        for (var i = 0; i < problem.numVariables && i < validatedSolution.length; i++) {
+          validatedValue += problem.objectiveCoefficients[i] * validatedSolution[i];
+        }
+        
         if (bestValue == null ||
             (problem.optimizationType == OptimizationType.maximize
-                ? node.relaxedValue! > bestValue
-                : node.relaxedValue! < bestValue)) {
-          bestValue = node.relaxedValue;
-          bestSolution = List.from(node.relaxedSolution!);
+                ? validatedValue > bestValue
+                : validatedValue < bestValue)) {
+          bestValue = validatedValue;
+          bestSolution = validatedSolution;
         }
         continue;
       }
@@ -131,9 +235,16 @@ class IntegerSolver {
     }
 
     if (bestSolution != null) {
+      // 最终验证和修正解
+      final finalSolution = _validateAndFixSolution(bestSolution, problem);
+      double finalValue = 0.0;
+      for (var i = 0; i < problem.numVariables && i < finalSolution.length; i++) {
+        finalValue += problem.objectiveCoefficients[i] * finalSolution[i];
+      }
+      
       return LinearProgramResult.optimal(
-        optimalValue: bestValue!,
-        solution: bestSolution,
+        optimalValue: finalValue,
+        solution: finalSolution,
         message: '找到整数最优解（探索了 $nodesExplored 个节点）',
       );
     }

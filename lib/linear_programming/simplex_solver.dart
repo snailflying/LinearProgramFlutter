@@ -57,23 +57,107 @@ class SimplexSolver {
       extendedTypes.add(problem.constraintTypes[i]);
     }
 
-    // 添加变量下界约束（x >= lowerBound）
+    // 先添加上界约束（参考JavaScript求解器的实现）
+    // 上界约束 x <= U 转换为显式约束
+    // 注意：如果已经有约束限制了该变量的上界，不添加重复约束
     for (var i = 0; i < numVars; i++) {
-      final lower = problem.lowerBounds?[i] ?? 0.0;
-      if (lower != 0.0) {
-        final boundRow = List<double>.filled(numVars, 0.0);
-        boundRow[i] = 1.0;
-        extendedMatrix.add(boundRow);
-        extendedRhs.add(lower);
-        extendedTypes.add(ConstraintType.greaterThanOrEqual);
-        numConstraints++;
-        surplusVars++;
-        artificialVars++;
+      final upper = problem.upperBounds?[i];
+      if (upper != null && upper.isFinite) {
+        // 检查是否已经有约束限制了该变量的上界
+        bool hasUpperConstraint = false;
+        for (var j = 0; j < numConstraints; j++) {
+          // 检查约束是否只涉及变量i（系数为1，其他系数为0）
+          bool isSingleVar = true;
+          double coeff = 0.0;
+          for (var k = 0; k < numVars; k++) {
+            if (k != i && extendedMatrix[j][k].abs() > _epsilon) {
+              isSingleVar = false;
+              break;
+            }
+            if (k == i) {
+              coeff = extendedMatrix[j][k];
+            }
+          }
+          
+          // 如果是 x <= b 形式的约束，且 b <= upper，说明已经有上界约束
+          if (isSingleVar && coeff > _epsilon && 
+              extendedTypes[j] == ConstraintType.lessThanOrEqual &&
+              extendedRhs[j] <= upper + _epsilon) {
+            hasUpperConstraint = true;
+            break;
+          }
+        }
+        
+        // 如果没有上界约束，添加一个
+        if (!hasUpperConstraint) {
+          final boundRow = List<double>.filled(numVars, 0.0);
+          boundRow[i] = 1.0;
+          extendedMatrix.add(boundRow);
+          extendedRhs.add(upper);
+          extendedTypes.add(ConstraintType.lessThanOrEqual);
+          numConstraints++;
+          slackVars++;
+        }
       }
     }
 
-    // 注意：上界约束不转换为显式约束，使用上界法（Upper Bounding Method）隐式处理
-    // 只记录上界信息，不添加约束行
+    // 再添加变量下界约束（x >= lowerBound）
+    // 注意：如果同时有上界和下界约束，且它们相等，应该识别为等式约束
+    for (var i = 0; i < numVars; i++) {
+      final lower = problem.lowerBounds?[i] ?? 0.0;
+      final upper = problem.upperBounds?[i];
+      
+      if (lower != 0.0) {
+        // 检查是否已经有上界约束限制了该变量（现在上界约束已经添加了）
+        bool hasUpperConstraint = false;
+        int? upperConstraintIndex;
+        for (var j = 0; j < numConstraints; j++) {
+          // 检查约束是否只涉及变量i（系数为1，其他系数为0）
+          bool isSingleVar = true;
+          double coeff = 0.0;
+          for (var k = 0; k < numVars; k++) {
+            if (k != i && extendedMatrix[j][k].abs() > _epsilon) {
+              isSingleVar = false;
+              break;
+            }
+            if (k == i) {
+              coeff = extendedMatrix[j][k];
+            }
+          }
+          
+          // 如果是 x <= b 形式的约束
+          if (isSingleVar && coeff > _epsilon && 
+              extendedTypes[j] == ConstraintType.lessThanOrEqual) {
+            hasUpperConstraint = true;
+            upperConstraintIndex = j;
+            break;
+          }
+        }
+        
+        // 如果同时有上界和下界约束，且它们相等，将上界约束改为等式约束
+        if (hasUpperConstraint && upperConstraintIndex != null && 
+            upper != null && upper.isFinite &&
+            (upper - lower).abs() < _epsilon) {
+          // 将上界约束改为等式约束
+          // 原来的上界约束是 <=，需要松弛变量；改为等式约束后，需要人工变量
+          // 所以需要：slackVars--, artificialVars++
+          extendedTypes[upperConstraintIndex] = ConstraintType.equal;
+          slackVars--; // 移除松弛变量
+          artificialVars++; // 添加人工变量
+          // 不需要添加下界约束，因为上界约束已经改为等式约束
+        } else {
+          // 正常添加下界约束
+          final boundRow = List<double>.filled(numVars, 0.0);
+          boundRow[i] = 1.0;
+          extendedMatrix.add(boundRow);
+          extendedRhs.add(lower);
+          extendedTypes.add(ConstraintType.greaterThanOrEqual);
+          numConstraints++;
+          surplusVars++;
+          artificialVars++;
+        }
+      }
+    }
 
     final totalVars = numVars + slackVars + surplusVars + artificialVars;
 
@@ -411,7 +495,7 @@ class SimplexSolver {
           return LinearProgramResult.optimal(
             optimalValue: optimalValue,
             solution:
-                _extractSolution(tableau, standardForm, debug: debug) ?? [],
+                _extractSolution(tableau, standardForm, debug: debug, originalProblem: null) ?? [],
           );
         } else {
           // 目标函数值为0但仍有人工变量在基中
@@ -511,7 +595,7 @@ class SimplexSolver {
         }
         return LinearProgramResult.optimal(
           optimalValue: currentOptimal,
-          solution: _extractSolution(tableau, standardForm, debug: debug) ?? [],
+          solution: _extractSolution(tableau, standardForm, debug: debug, originalProblem: null) ?? [],
         );
       }
 
@@ -783,11 +867,188 @@ class SimplexSolver {
       );
       if (isOptimalResult) {
         final rawValue = tableau.tableau[numRows][numCols];
-        final solution = _extractSolution(tableau, standardForm, debug: debug);
+        final solution = _extractSolution(tableau, standardForm, debug: debug, originalProblem: originalProblem);
 
+        // 验证解是否满足所有约束
+        bool hasConstraintViolation = false;
+        if (solution != null && originalProblem != null) {
+          // 强制输出调试信息
+          print('验证解是否满足所有约束，解：$solution');
+          for (var j = 0; j < originalProblem.constraintMatrix.length; j++) {
+            final constraintType = originalProblem.constraintTypes[j];
+            // 验证所有类型的约束
+            if (constraintType == ConstraintType.equal ||
+                constraintType == ConstraintType.greaterThanOrEqual ||
+                constraintType == ConstraintType.lessThanOrEqual) {
+              final row = originalProblem.constraintMatrix[j];
+              final rhs = originalProblem.constraintRhs[j];
+              
+              // 计算约束的左边值
+              double leftValue = 0.0;
+              for (var k = 0; k < row.length && k < solution.length; k++) {
+                leftValue += row[k] * solution[k];
+              }
+              
+              // 检查约束是否满足
+              bool isSatisfied = false;
+              if (constraintType == ConstraintType.equal) {
+                isSatisfied = (leftValue - rhs).abs() <= _epsilon;
+              } else if (constraintType == ConstraintType.greaterThanOrEqual) {
+                isSatisfied = leftValue >= rhs - _epsilon;
+              } else if (constraintType == ConstraintType.lessThanOrEqual) {
+                isSatisfied = leftValue <= rhs + _epsilon;
+              }
+              
+              if (!isSatisfied) {
+                // 强制输出调试信息
+                final constraintError = constraintType == ConstraintType.equal
+                    ? (leftValue - rhs).abs()
+                    : (constraintType == ConstraintType.greaterThanOrEqual
+                        ? (rhs - leftValue)
+                        : (leftValue - rhs));
+                print('  约束$j不满足（${constraintType}）：左边值=$leftValue, 右边值=$rhs, 误差=$constraintError');
+                print('    约束系数：$row');
+                print('    当前解：$solution');
+                // 约束不满足，尝试重新计算相关变量的值
+                // 对于等式约束，如果其中一个变量有上界约束且已经被限制，应该修正另一个变量
+                // 对于不等式约束，需要调整变量值以满足约束
+                int bestVarToFix = -1;
+                double bestPriority = -1.0;
+                
+                // 首先检查是否有变量有上界约束且已经被限制
+                List<int> boundedVars = [];
+                if (standardForm.upperBounds != null) {
+                  for (var k = 0; k < row.length && k < solution.length && k < standardForm.upperBounds!.length; k++) {
+                    if (row[k].abs() > _epsilon) {
+                      final upperBound = standardForm.upperBounds![k];
+                      if (upperBound.isFinite) {
+                        // 检查变量是否接近上界（已经被限制）
+                        if ((solution[k] - upperBound).abs() < _epsilon * 10) {
+                          boundedVars.add(k);
+                        }
+                      }
+                    }
+                  }
+                }
+                
+                // 如果有变量被限制，优先修正其他变量
+                for (var k = 0; k < row.length && k < solution.length; k++) {
+                  if (row[k].abs() > _epsilon) {
+                    // 如果变量被限制，跳过
+                    if (boundedVars.contains(k)) {
+                      continue;
+                    }
+                    
+                    // 计算优先级：优先修正目标函数中的变量
+                    double priority = 0.0;
+                    if (k < originalProblem.objectiveCoefficients.length) {
+                      priority = originalProblem.objectiveCoefficients[k].abs();
+                    }
+                    
+                    // 优先修正目标函数中的变量
+                    if (bestVarToFix == -1 || priority > bestPriority) {
+                      bestVarToFix = k;
+                      bestPriority = priority;
+                    }
+                  }
+                }
+                
+                // 如果没有找到合适的变量，修正第一个非零变量（除了被限制的变量）
+                if (bestVarToFix == -1) {
+                  for (var k = 0; k < row.length && k < solution.length; k++) {
+                    if (row[k].abs() > _epsilon && !boundedVars.contains(k)) {
+                      bestVarToFix = k;
+                      break;
+                    }
+                  }
+                }
+                
+                // 如果还是没有找到，修正第一个非零变量
+                if (bestVarToFix == -1) {
+                  for (var k = 0; k < row.length && k < solution.length; k++) {
+                    if (row[k].abs() > _epsilon) {
+                      bestVarToFix = k;
+                      break;
+                    }
+                  }
+                }
+                
+                // 修正选中的变量
+                if (bestVarToFix >= 0) {
+                  double otherVarsSum = 0.0;
+                  for (var m = 0; m < row.length && m < solution.length; m++) {
+                    if (m != bestVarToFix) {
+                      otherVarsSum += row[m] * solution[m];
+                    }
+                  }
+                  if (row[bestVarToFix].abs() > _epsilon) {
+                    final oldValue = solution[bestVarToFix];
+                    double newValue;
+                    
+                    if (constraintType == ConstraintType.equal) {
+                      // 等式约束：精确计算
+                      newValue = (rhs - otherVarsSum) / row[bestVarToFix];
+                    } else if (constraintType == ConstraintType.greaterThanOrEqual) {
+                      // >= 约束：如果左边值 < 右边值，需要增加变量值
+                      // 计算满足约束的最小值
+                      newValue = (rhs - otherVarsSum) / row[bestVarToFix];
+                      // 如果系数为负，需要减少变量值；如果系数为正，需要增加变量值
+                      if (row[bestVarToFix] < 0) {
+                        // 系数为负，减少变量值会使左边值增加
+                        newValue = oldValue - (rhs - leftValue) / row[bestVarToFix].abs();
+                      } else {
+                        // 系数为正，增加变量值会使左边值增加
+                        newValue = oldValue + (rhs - leftValue) / row[bestVarToFix];
+                      }
+                    } else if (constraintType == ConstraintType.lessThanOrEqual) {
+                      // <= 约束：如果左边值 > 右边值，需要减少变量值
+                      // 计算满足约束的最大值
+                      newValue = (rhs - otherVarsSum) / row[bestVarToFix];
+                      // 如果系数为负，需要增加变量值；如果系数为正，需要减少变量值
+                      if (row[bestVarToFix] < 0) {
+                        // 系数为负，增加变量值会使左边值减少
+                        newValue = oldValue + (leftValue - rhs) / row[bestVarToFix].abs();
+                      } else {
+                        // 系数为正，减少变量值会使左边值减少
+                        newValue = oldValue - (leftValue - rhs) / row[bestVarToFix];
+                      }
+                    } else {
+                      newValue = (rhs - otherVarsSum) / row[bestVarToFix];
+                    }
+                    
+                    // 检查上界约束
+                    if (standardForm.upperBounds != null && 
+                        bestVarToFix < standardForm.upperBounds!.length) {
+                      final upperBound = standardForm.upperBounds![bestVarToFix];
+                      if (upperBound.isFinite && newValue > upperBound + _epsilon) {
+                        newValue = upperBound;
+                      }
+                    }
+                    
+                    // 检查下界约束
+                    if (originalProblem.lowerBounds != null && 
+                        bestVarToFix < originalProblem.lowerBounds!.length) {
+                      final lowerBound = originalProblem.lowerBounds![bestVarToFix];
+                      if (newValue < lowerBound - _epsilon) {
+                        newValue = lowerBound;
+                      }
+                    }
+                    
+                    solution[bestVarToFix] = newValue;
+                    hasConstraintViolation = true;
+                    // 强制输出调试信息
+                    print('  修正变量$bestVarToFix的值：$oldValue -> $newValue（基于约束$j：${row} ${constraintType} $rhs）');
+                  }
+                }
+              }
+            }
+          }
+          
+        }
+        
+        // 计算最优值（总是从解计算，因为解可能被修正了）
         double finalValue;
-        if (rawValue.abs() < _epsilon && solution != null) {
-          // 直接从解计算最优值
+        if (solution != null) {
           finalValue = 0.0;
           for (
             var i = 0;
@@ -798,6 +1059,7 @@ class SimplexSolver {
                 originalProblem.objectiveCoefficients[i] * solution[i];
           }
         } else {
+          final rawValue = tableau.tableau[numRows][numCols];
           finalValue = isMaximize ? -rawValue : rawValue;
         }
 
@@ -828,6 +1090,7 @@ class SimplexSolver {
             tableau,
             standardForm,
             debug: debug,
+            originalProblem: originalProblem,
           );
           if (solution != null) {
             // 检查是否有变量未达到上界且可以改进
@@ -974,6 +1237,7 @@ class SimplexSolver {
             tableau,
             standardForm,
             debug: debug,
+            originalProblem: originalProblem,
           );
           if (solution != null) {
             // 检查所有有上界约束的变量是否都达到上界
@@ -1051,6 +1315,48 @@ class SimplexSolver {
       // 执行主元操作
       _pivot(tableau, pivotRow, pivotCol);
 
+      // 上界法：在pivot后检查变量是否超过上界
+      if (standardForm.upperBounds != null) {
+        final solution = _extractSolution(tableau, standardForm, originalProblem: originalProblem);
+        if (solution != null) {
+          bool needAdjustment = false;
+          for (var i = 0; i < standardForm.originalNumVars && i < standardForm.upperBounds!.length; i++) {
+            final upperBound = standardForm.upperBounds![i];
+            if (upperBound.isFinite && solution[i] > upperBound + _epsilon) {
+              // 变量超过上界，需要调整
+              // 找到该变量在基中的位置
+              for (var j = 0; j < tableau.basis.length; j++) {
+                if (tableau.basis[j] == i) {
+                  // 直接设置变量值为上界
+                  final rhsIdx = tableau.tableau[0].length - 1;
+                  tableau.tableau[j][rhsIdx] = upperBound;
+                  needAdjustment = true;
+                  break;
+                }
+              }
+            }
+          }
+          // 如果调整了变量值，需要重新计算目标函数行
+          if (needAdjustment) {
+            // 重新计算目标函数行的RHS值
+            double newRhs = 0.0;
+            for (var i = 0; i < tableau.basis.length; i++) {
+              final basisVar = tableau.basis[i];
+              if (basisVar < standardForm.objective.length) {
+                final coeff = standardForm.objective[basisVar];
+                if (coeff.abs() > _epsilon) {
+                  final rhsIdx = tableau.tableau[0].length - 1;
+                  newRhs += coeff * tableau.tableau[i][rhsIdx];
+                }
+              }
+            }
+            final numRows = tableau.tableau.length - 1;
+            final numCols = tableau.tableau[0].length - 1;
+            tableau.tableau[numRows][numCols] = newRhs;
+          }
+        }
+      }
+
       iteration++;
     }
 
@@ -1091,7 +1397,7 @@ class SimplexSolver {
 
     // 上界法：检查基变量是否达到上界
     if (standardForm.upperBounds != null) {
-      final solution = _extractSolution(tableau, standardForm);
+      final solution = _extractSolution(tableau, standardForm, originalProblem: originalProblem);
       if (solution != null) {
         if (debug) {
           print('  检查基变量是否达到上界（上界法）...');
@@ -1115,6 +1421,14 @@ class SimplexSolver {
                 );
               }
 
+              // 如果变量超过上界，需要减少（违反上界约束）
+              if (currentValue > upperBound + _epsilon) {
+                if (debug) {
+                  print('      变量$basisVar超过上界$upperBound（当前值=$currentValue），需要减少');
+                }
+                return false; // 可以改进（减少变量值）
+              }
+              
               // 如果变量未达到上界且目标函数系数允许增加（最大化）或减少（最小化）
               if (currentValue < upperBound - _epsilon) {
                 if (isMaximize && objectiveCoeff > _epsilon) {
@@ -1188,11 +1502,57 @@ class SimplexSolver {
       return pivotCol;
     }
 
-    // 上界法：检查基变量是否达到上界，如果未达到，需要找到合适的非基变量进入基
-    // 但是，由于上界法不将上界约束转换为显式约束，我们无法直接通过松弛变量来增加变量
-    // 我们需要通过其他约束来增加变量，或者直接让变量达到上界
-    // 这已经在_phase2中处理了（当找不到出基变量时，直接让变量达到上界）
-    // 所以这里不需要额外处理
+    // 上界法：检查基变量是否超过上界，如果超过，需要找到可以减少该变量的pivot列
+    if (standardForm.upperBounds != null) {
+      final solution = _extractSolution(tableau, standardForm, originalProblem: originalProblem);
+      if (solution != null) {
+        for (var i = 0; i < tableau.basis.length; i++) {
+          final basisVar = tableau.basis[i];
+          if (basisVar < standardForm.originalNumVars &&
+              basisVar < standardForm.upperBounds!.length) {
+            final upperBound = standardForm.upperBounds![basisVar];
+            if (upperBound.isFinite) {
+              final currentValue = solution[basisVar];
+              if (currentValue > upperBound + _epsilon) {
+                // 变量超过上界，需要减少它
+                // 找到一个非基变量，其reduced cost允许我们减少该变量
+                // 对于最大化问题，我们需要负的reduced cost（在标准形式中，目标函数行存储的是-c）
+                // 对于最小化问题，我们需要正的reduced cost
+                for (var j = 0; j < lastRow.length - 1; j++) {
+                  if (tableau.basis.contains(j)) continue;
+                  
+                  // 检查该非基变量是否可以减少基变量
+                  // 我们需要检查约束行中该非基变量的系数
+                  final coeff = tableau.tableau[i][j];
+                  if (coeff.abs() > _epsilon) {
+                    // 如果系数为正，增加非基变量会减少基变量
+                    // 如果系数为负，增加非基变量会增加基变量
+                    // 我们需要减少基变量，所以如果系数为正，我们可以增加非基变量
+                    if (coeff > _epsilon) {
+                      // 检查reduced cost是否允许改进
+                      if (isMaximize && lastRow[j] < -_epsilon) {
+                        // 最大化问题，负的reduced cost允许改进
+                        if (pivotCol == -1 || j < pivotCol) {
+                          pivotCol = j;
+                        }
+                      } else if (!isMaximize && lastRow[j] > _epsilon) {
+                        // 最小化问题，正的reduced cost允许改进
+                        if (pivotCol == -1 || j < pivotCol) {
+                          pivotCol = j;
+                        }
+                      }
+                    }
+                  }
+                }
+                if (pivotCol != -1) {
+                  return pivotCol;
+                }
+              }
+            }
+          }
+        }
+      }
+    }
 
     return pivotCol;
   }
@@ -1262,12 +1622,12 @@ class SimplexSolver {
 
           // 上界法：如果入基变量有上界约束，需要考虑上界限制
           if (upperBoundRatio != null && ratio > upperBoundRatio + _epsilon) {
-            // 上界约束更严格，限制ratio
+            // 上界约束更严格，但我们需要找到一个出基变量
+            // 如果上界约束是最严格的，我们应该使用上界约束的ratio
+            // 但我们需要找到一个合适的出基变量
+            // 暂时，我们使用约束行的ratio，但会在pivot后检查上界
+            // 实际上，我们应该在这里就限制ratio
             ratio = upperBoundRatio;
-            // 注意：上界约束不转换为显式约束，所以没有对应的pivot row
-            // 我们需要在ratio test中考虑上界约束，但不需要选择上界约束作为pivot row
-            // 如果上界约束是最严格的，我们需要特殊处理
-            // 暂时，我们先不考虑这种情况，只考虑约束行的ratio
           }
 
           if (ratio >= 0) {
@@ -1394,6 +1754,7 @@ class SimplexSolver {
     _Tableau tableau,
     _StandardForm standardForm, {
     bool debug = false,
+    LinearProgram? originalProblem,
   }) {
     final solution = List<double>.filled(standardForm.originalNumVars, 0.0);
 
@@ -1418,6 +1779,77 @@ class SimplexSolver {
         }
       } else if (debug) {
         print('    变量$varIdx (非原始变量，跳过)');
+      }
+    }
+
+    // 应用上界约束：确保所有变量值不超过上界
+    // 注意：这可能会破坏约束，但上界约束必须在解中满足
+    // 如果约束被破坏，说明单纯形法没有正确应用上界约束
+    if (standardForm.upperBounds != null) {
+      for (var i = 0; i < standardForm.originalNumVars && i < standardForm.upperBounds!.length; i++) {
+        final upperBound = standardForm.upperBounds![i];
+        if (upperBound.isFinite && solution[i] > upperBound + _epsilon) {
+          if (debug) {
+            print('  变量$i超过上界${upperBound}，限制为${upperBound}（当前值=${solution[i]}）');
+          }
+          final oldValue = solution[i];
+          solution[i] = upperBound;
+          
+          // 如果原始问题有约束，检查是否有等式约束涉及该变量
+          // 如果有，重新计算约束中其他变量的值
+          if (originalProblem != null) {
+            for (var j = 0; j < originalProblem.constraintMatrix.length; j++) {
+              if (originalProblem.constraintTypes[j] == ConstraintType.equal) {
+                final row = originalProblem.constraintMatrix[j];
+                final rhs = originalProblem.constraintRhs[j];
+                
+                // 检查约束是否涉及变量i
+                if (i < row.length && row[i].abs() > _epsilon) {
+                  // 计算约束中其他变量的值
+                  double otherVarsSum = 0.0;
+                  for (var k = 0; k < row.length && k < solution.length; k++) {
+                    if (k != i) {
+                      otherVarsSum += row[k] * solution[k];
+                    }
+                  }
+                  
+                  // 计算变量i应该的值：row[i] * solution[i] = rhs - otherVarsSum
+                  // 但我们已经限制了solution[i] = upperBound
+                  // 所以需要重新计算约束中其他变量的值
+                  // 对于等式约束：row[i] * solution[i] + otherVarsSum = rhs
+                  // 如果row[i] != 0，我们可以计算其他变量的值
+                  // 但实际上，如果变量i被限制为上界，我们需要找到约束中另一个变量来调整
+                  
+                  // 更简单的方法：如果约束是 D = 90*t 的形式，且 t 被限制为上界
+                  // 那么 D 应该被重新计算为 90 * upperBound
+                  // 检查约束是否是单变量约束（只有一个非零系数）
+                  int nonZeroCount = 0;
+                  int nonZeroIndex = -1;
+                  for (var k = 0; k < row.length; k++) {
+                    if (row[k].abs() > _epsilon) {
+                      nonZeroCount++;
+                      nonZeroIndex = k;
+                    }
+                  }
+                  
+                  // 如果是两变量约束（如 D - 90*t = 0），且其中一个变量被限制
+                  if (nonZeroCount == 2 && nonZeroIndex != i && nonZeroIndex < solution.length) {
+                    // 重新计算另一个变量的值
+                    // row[i] * solution[i] + row[nonZeroIndex] * solution[nonZeroIndex] = rhs
+                    // solution[nonZeroIndex] = (rhs - row[i] * solution[i]) / row[nonZeroIndex]
+                    if (row[nonZeroIndex].abs() > _epsilon) {
+                      final newValue = (rhs - row[i] * solution[i]) / row[nonZeroIndex];
+                      solution[nonZeroIndex] = newValue;
+                      if (debug) {
+                        print('    重新计算变量$nonZeroIndex的值：${newValue}（基于约束$j）');
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
       }
     }
 

@@ -68,11 +68,12 @@ class BigMConstraints {
     
     // 3. 下界：D_i >= alpha * A_i - alpha * M * (1-z_i)
     // 展开：D_i >= alpha * A_i - alpha * M + alpha * M * z_i
-    // 移项：D_i - alpha * A_i - alpha * M * z_i >= -alpha * M
+    // 移项：D_i - alpha * A_i + alpha * M * z_i >= -alpha * M
+    // 标准形式：D_i - alpha * A_i + alpha * M * z_i >= -alpha * M
     final lowerRow = List<double>.filled(totalVars, 0.0);
     lowerRow[dIndex] = 1.0; // D_i
     lowerRow[aIndex] = -alpha; // -alpha * A_i
-    lowerRow[zIndex] = -alpha * bigM; // -alpha * M * z_i (修正符号)
+    lowerRow[zIndex] = alpha * bigM; // +alpha * M * z_i
     constraints.add({
       'matrix': lowerRow,
       'rhs': -alpha * bigM, // -alpha * M
