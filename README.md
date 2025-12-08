@@ -25,12 +25,6 @@ On the other hand, these features from jsLPSolver were dropped:
 
 # Usage
 
-## Installation
-
-```sh
-npm i yalps
-```
-
 ## Import
 
 The main solve function:
