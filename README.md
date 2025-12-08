@@ -1,16 +1,209 @@
 # demo_flutter
 
-YALPSp[https://github.com/IanManske/YALPS]的dart实现.
+[YALPS](https://github.com/IanManske/YALPS) 的dart实现.
 
 ## Getting Started
 
-This project is a starting point for a Flutter application.
+YALPS   
+What is This (For)?
+This is Yet Another Linear Programming Solver (YALPS). It is intended as a performant, lightweight linear programming (LP) solver geared towards small LP problems. It can solve non-integer, integer, and mixed integer LP problems. While webassembly ports of existing solvers perform well, they tend to have larger bundle sizes and may be overkill for your use case. YALPS is the alternative for the browser featuring a small bundle size.
 
-A few resources to get you started if this is your first Flutter project:
+YALPS is a rewrite of jsLPSolver. The people there have made a great and easy to use solver. However, the API was limited to objects only, and I saw other areas that could have been improved. You can check out jsLPSolver for more background and information regarding LP problems.
 
-- [Lab: Write your first Flutter app](https://docs.flutter.dev/get-started/codelab)
-- [Cookbook: Useful Flutter samples](https://docs.flutter.dev/cookbook)
+Compared to jsLPSolver, YALPS has the following differences:
 
-For help getting started with Flutter development, view the
-[online documentation](https://docs.flutter.dev/), which offers tutorials,
-samples, guidance on mobile development, and a full API reference.
+More flexible API (e.g., support for Iterables alongside objects)
+Better performance (especially for non-integer problems, see Performance for more details.)
+Good Typescript support (YALPS is written in Typescript)
+On the other hand, these features from jsLPSolver were dropped:
+
+Unrestricted variables (might be added later)
+Multiobjective optimization
+External solvers
+Usage
+Installation
+npm i yalps
+Import
+The main solve function:
+
+import { solve } from "yalps"
+Optional helper functions:
+
+import { lessEq, equalTo, greaterEq, inRange } from "yalps"
+Types, as necessary:
+
+import { Model, Constraint, Coefficients, OptimizationDirection, Options, Solution } from "yalps"
+Examples
+Using objects:
+
+const model = {
+  direction: "maximize" as const,
+  objective: "profit",
+  constraints: {
+    wood: { max: 300 },
+    labor: { max: 110 }, // labor should be <= 110
+    storage: lessEq(400), // you can use the helper functions instead
+  },
+  variables: {
+    table: { wood: 30, labor: 5, profit: 1200, storage: 30 },
+    dresser: { wood: 20, labor: 10, profit: 1600, storage: 50 },
+  },
+  integers: ["table", "dresser"], // these variables must have an integer value in the solution
+}
+
+const solution = solve(model)
+// { status: "optimal", result: 14400, variables: [ ["table", 8], ["dresser", 3] ] }
+Iterables and objects can be mixed and matched for the constraints and variables fields. Additionally, each variable's coefficients can be an object or an iterable. E.g.:
+
+const constraints = new Map<string, Constraint>()
+  .set("wood", { max: 300 })
+  .set("labor", lessEq(110))
+  .set("storage", lessEq(400))
+
+const dresser = new Map<string, number>()
+  .set("wood", 20)
+  .set("labor", 10)
+  .set("profit", 1600)
+  .set("storage", 50)
+
+const model: Model = {
+  direction: "maximize",
+  objective: "profit",
+  constraints: constraints, // is an iterable
+  variables: { // kept as an object
+    table: { wood: 30, labor: 5, profit: 1200, storage: 30 }, // an object
+    dresser: dresser, // an iterable
+  },
+  integers: true, // all variables are indicated as integer
+}
+
+const solution: Solution = solve(model)
+// { status: "optimal", result: 14400, variables: [ ["table", 8], ["dresser", 3] ] }
+For more extensive documentation, use the JSDoc annotations / hover information in your editor. In particular, you probably want to take a look at the documentation comments for the Options, Solution, and Model types.
+
+In the browser
+In case you need it, a minified version of the code is available under dist/index.min.js. When loading this file as a script, YALPS will be available as a global variable named YALPS:
+
+<script src="https://unpkg.com/yalps@0.6.3/dist/index.min.js"></script>
+<!-- For unpkg, `dist/index.min.js` is the default, so you can choose to omit it. -->
+<!-- <script src="https://unpkg.com/yalps@0.6.3"></script> -->
+<script>
+  const { solve } = YALPS
+  /* your code */
+</script>
+Like unpkg above, a similar shorthand is also supported for jsdelivr:
+
+<script src="https://cdn.jsdelivr.net/npm/yalps@0.6.3"></script>
+<!-- Same as the below -->
+<!-- <script src="https://cdn.jsdelivr.net/npm/yalps@0.6.3/dist/index.min.js"></script> -->
+<script>
+  const { solve } = YALPS
+  /* your code */
+</script>
+Performance
+While YALPS generally performs better than javascript-lp-solver, this solver is still geared towards small problems (hundreds of variables or constraints). For example, the solver keeps the full representation of the matrix in memory as a dense array. As a general rule, the number of variables and constraints should probably be a few thousand or less, and the number of integer variables should be a few hundred at the most. If your use case has large problems, it is recommended that you first benchmark and test the solver on your own before committing to using it. For very large and/or integral problems, a more professional solver is recommended, e.g. glpk.js.
+
+Nevertheless, below are the results from some benchmarks comparing YALPS to other solvers. Each solver was run 30 times for each benchmark problem. A full garbage collection was manually triggered before starting each solver's 30 trials. The averages and standard deviations are measured in milliseconds. Slowdown is calculated as mean / fastest mean. The benchmarks were run on ts-node v10.9.1 and node v19.8.1. Your mileage may vary in a browser setting.
+
+Monster 2: 888 constraints, 924 variables, 112 integers:
+┌────────────┬────────┬────────┬──────────┐
+│  (index)   │  mean  │ stdDev │ slowdown │
+├────────────┼────────┼────────┼──────────┤
+│   YALPS    │ 53.95  │  2.25  │    1     │
+│  glpk.js   │ 116.19 │  3.2   │   2.15   │
+│ jsLPSolver │ 184.9  │ 10.43  │   3.43   │
+└────────────┴────────┴────────┴──────────┘
+
+Monster Problem: 600 constraints, 552 variables, 0 integers:
+┌────────────┬──────┬────────┬──────────┐
+│  (index)   │ mean │ stdDev │ slowdown │
+├────────────┼──────┼────────┼──────────┤
+│   YALPS    │ 1.85 │  1.28  │    1     │
+│  glpk.js   │ 4.78 │  1.07  │   2.58   │
+│ jsLPSolver │ 7.41 │  5.03  │    4     │
+└────────────┴──────┴────────┴──────────┘
+
+Vendor Selection: 1641 constraints, 1640 variables, 40 integers:
+┌────────────┬────────┬────────┬──────────┐
+│  (index)   │  mean  │ stdDev │ slowdown │
+├────────────┼────────┼────────┼──────────┤
+│  glpk.js   │  61.3  │  1.35  │    1     │
+│   YALPS    │ 296.05 │  3.21  │   4.83   │
+│ jsLPSolver │ 404.31 │ 15.73  │   6.6    │
+└────────────┴────────┴────────┴──────────┘
+
+Large Farm MIP: 35 constraints, 100 variables, 100 integers:
+┌────────────┬───────┬────────┬──────────┐
+│  (index)   │ mean  │ stdDev │ slowdown │
+├────────────┼───────┼────────┼──────────┤
+│  glpk.js   │ 6.24  │  1.04  │    1     │
+│   YALPS    │ 30.46 │  1.29  │   4.88   │
+│ jsLPSolver │ 58.28 │  2.17  │   9.33   │
+└────────────┴───────┴────────┴──────────┘
+
+AGG2: 516 constraints, 302 variables, 0 integers:
+┌────────────┬──────┬────────┬──────────┐
+│  (index)   │ mean │ stdDev │ slowdown │
+├────────────┼──────┼────────┼──────────┤
+│   YALPS    │ 1.6  │  0.6   │    1     │
+│ jsLPSolver │ 7.09 │  3.05  │   4.44   │
+│  glpk.js   │ 7.57 │  0.96  │   4.74   │
+└────────────┴──────┴────────┴──────────┘
+
+BEACONFD: 173 constraints, 262 variables, 0 integers:
+┌────────────┬──────┬────────┬──────────┐
+│  (index)   │ mean │ stdDev │ slowdown │
+├────────────┼──────┼────────┼──────────┤
+│  glpk.js   │ 2.42 │  0.5   │    1     │
+│   YALPS    │ 2.59 │  0.59  │   1.07   │
+│ jsLPSolver │ 5.35 │  1.25  │   2.21   │
+└────────────┴──────┴────────┴──────────┘
+
+SC205: 205 constraints, 203 variables, 0 integers:
+┌────────────┬───────┬────────┬──────────┐
+│  (index)   │ mean  │ stdDev │ slowdown │
+├────────────┼───────┼────────┼──────────┤
+│  glpk.js   │  2.6  │  0.5   │    1     │
+│   YALPS    │ 7.18  │  0.23  │   2.76   │
+│ jsLPSolver │ 10.86 │  1.69  │   4.17   │
+└────────────┴───────┴────────┴──────────┘
+
+SCFXM1: 330 constraints, 457 variables, 0 integers:
+┌────────────┬───────┬────────┬──────────┐
+│  (index)   │ mean  │ stdDev │ slowdown │
+├────────────┼───────┼────────┼──────────┤
+│  glpk.js   │  6.3  │  0.31  │    1     │
+│   YALPS    │ 20.67 │   1    │   3.28   │
+│ jsLPSolver │ 33.22 │  4.81  │   5.27   │
+└────────────┴───────┴────────┴──────────┘
+
+SCRS8: 490 constraints, 1169 variables, 0 integers:
+┌────────────┬────────┬────────┬──────────┐
+│  (index)   │  mean  │ stdDev │ slowdown │
+├────────────┼────────┼────────┼──────────┤
+│  glpk.js   │  18.1  │  1.54  │    1     │
+│   YALPS    │  56.8  │  1.08  │   3.14   │
+│ jsLPSolver │ 101.08 │  3.67  │   5.59   │
+└────────────┴────────┴────────┴──────────┘
+
+SCTAP2: 1090 constraints, 1880 variables, 0 integers:
+┌────────────┬───────┬────────┬──────────┐
+│  (index)   │ mean  │ stdDev │ slowdown │
+├────────────┼───────┼────────┼──────────┤
+│  glpk.js   │ 19.87 │  1.82  │    1     │
+│   YALPS    │ 49.98 │  2.39  │   2.51   │
+│ jsLPSolver │ 102.8 │ 12.74  │   5.17   │
+└────────────┴───────┴────────┴──────────┘
+
+SHIP08S: 778 constraints, 2387 variables, 0 integers:
+┌────────────┬───────┬────────┬──────────┐
+│  (index)   │ mean  │ stdDev │ slowdown │
+├────────────┼───────┼────────┼──────────┤
+│  glpk.js   │ 13.51 │  0.53  │    1     │
+│   YALPS    │ 17.86 │  1.75  │   1.32   │
+│ jsLPSolver │ 65.88 │ 10.59  │   4.88   │
+└────────────┴───────┴────────┴──────────┘
+The code used for these benchmarks is available under benchmarks/. Measuring performance isn't always straightforward, so take these synthetic benchmarks with a grain of salt. It is always recommended to benchmark for your use case. Then again, if your problems are typically of small size, then this solver should have no issue (and may be faster)!
+
+Maintenance/Status
+This package is still being maintained (i.e., bug fixes and security updates as necessary). However, no new features are planned or being worked on at this time.
